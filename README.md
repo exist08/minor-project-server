@@ -5,12 +5,8 @@ npm install
 ```
 # Database configuration
 * We are using [MongoDB Atlas](https://www.mongodb.com/cloud/atlas)
-* If you are using the same then you only need to create the database name: easy-notes
-* Change the url in config->database.config.js
+* If you are using the same then you only need to create the database name: minor-projectv1
 
-```javascript
-url: ''
-```
 
 # Run the project
 ```javascript
