@@ -21,6 +21,7 @@ const Faculty = mongoose.model('teachers', new mongoose.Schema({ facultyName: St
 const Subject = mongoose.model('subject', new mongoose.Schema({ subjectCode: String, subjectName: String, subjectAbbreviation: String }));
 const Classes = mongoose.model('classes', new mongoose.Schema({ className: String, section: String, schedule: Object }));
 const Users = mongoose.model('users', new mongoose.Schema({ username: String, hashedPassword: String, role: String }));
+const Students = mongoose.model('students', new mongoose.Schema({ enrollmentNumber: String, name: String, age: String, classId: String }));
 
 // Routes
 // Fetch rooms
@@ -185,7 +186,7 @@ app.post('/api/users/accounts', async (req, res) => {
         const hashedPassword = await bcrypt.hash(password, salt);  // Hash the password
 
         // Create a new user
-        await Users.create({username: username, hashedPassword: hashedPassword, role: role})
+        await Users.create({ username: username, hashedPassword: hashedPassword, role: role })
         console.log(req.body);
 
         res.status(201).send({ message: 'User account created successfully', user: { username, role } });
@@ -193,6 +194,120 @@ app.post('/api/users/accounts', async (req, res) => {
         res.status(400).send({ message: 'Error creating account', error: err.message });
     }
 });
+
+// Bulk User accounts creation
+app.post('/api/users/accounts/create-bulk-users', async (req, res) => {
+    const users = req.body; // This will contain the array of users parsed from CSV
+
+    // Iterate over the users and create them in the database
+    for (const user of users) {
+        const { username, password, role } = user;
+
+        // Validate role
+        if (!['teacher', 'student'].includes(role)) {
+            return res.status(400).send(`Invalid role for user: ${username}`);
+        }
+
+        // Hash the password
+        const hashedPassword = await bcrypt.hash(password, 10);
+
+        // Create a new user
+        await Users.create({ username: username, hashedPassword: hashedPassword, role: role })
+        console.log(req.body);
+
+        try {
+            await newUser.save();
+        } catch (err) {
+            return res.status(400).send(`Error creating user ${username}: ${err.message}`);
+        }
+    }
+
+    res.status(201).send('All users created successfully!');
+});
+
+
+// Fetch teachers
+// Fetch teachers with details from Teachers collection
+app.get('/api/users/teachers', async (req, res) => {
+    try {
+        // Get the list of teachers from the Users collection (based on role)
+        const users = await Users.find({ role: 'teacher' }, 'username');
+        
+        // Fetch additional details from the Teachers collection using username
+        const teachersDetails = await Promise.all(users.map(async (user) => {
+            const teacherInfo = await Faculty.findOne({ username: user.username });
+            return {
+                ...user._doc, // spread the user info
+                teacherDetails: teacherInfo // add the teacher's detailed info
+            };
+        }));
+
+        res.status(200).json(teachersDetails);
+    } catch (err) {
+        res.status(500).send('Error fetching teachers: ' + err.message);
+    }
+});
+
+
+// Fetch students
+// Fetch students with enrollment and details from Students collection
+app.get('/api/users/students', async (req, res) => {
+    try {
+        // Get the list of students from the Users collection
+        const users = await Users.find({ role: 'student' }, 'username');
+        
+        // Fetch additional details from the Students collection using username
+        const studentsDetails = await Promise.all(users.map(async (user) => {
+            const studentInfo = await Students.findOne({ enrollmentNumber: user.username });
+            return {
+                ...user._doc, // spread the user info
+                studentDetails: studentInfo // add the student's detailed info including enrollment
+            };
+        }));
+
+        res.status(200).json(studentsDetails);
+    } catch (err) {
+        res.status(500).send('Error fetching students: ' + err.message);
+    }
+});
+
+
+
+
+// User login
+app.post('/login', async (req, res) => {
+    const { username, password } = req.body;
+    console.log(req.body)
+    // Find the user in the users collection
+    const user = await Users.findOne({ username });
+    if (!user) {
+        return res.status(400).send('User not found');
+    }
+
+    // Validate password
+    const isPasswordValid = await bcrypt.compare(password, user?.hashedPassword);
+    if (!isPasswordValid) {
+        return res.status(400).send('Invalid password');
+    }
+
+    // Fetch user data from the respective collection based on their role
+    if (user.role === 'teacher') {
+        const teacherData = await Faculty.findOne({ username });
+        if (!teacherData) {
+            return res.status(404).send('Teacher data not found');
+        }
+        res.status(200).json({ role: 'teacher', ...teacherData._doc });
+    } else if (user.role === 'student') {
+        const studentData = await Students.findOne({ enrollmentNumber: username });
+        if (!studentData) {
+            return res.status(404).send('Student data not found');
+        }
+        res.status(200).json({ role: 'student', ...studentData._doc });
+    } else {
+        res.status(400).send('Invalid role');
+    }
+});
+
 
 // Start the server
 const PORT = process.env.PORT || 5000;
