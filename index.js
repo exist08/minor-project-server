@@ -22,6 +22,15 @@ const Subject = mongoose.model('subject', new mongoose.Schema({ subjectCode: Str
 const Classes = mongoose.model('classes', new mongoose.Schema({ className: String, section: String, schedule: Object }));
 const Users = mongoose.model('users', new mongoose.Schema({ username: String, hashedPassword: String, role: String }));
 const Students = mongoose.model('students', new mongoose.Schema({ enrollmentNumber: String, name: String, age: String, classId: String }));
+const Announcements = mongoose.model('announcements', new mongoose.Schema({
+    text: String,
+    postedBy: String,
+    createdAt: {
+        type: Date,
+        default: Date.now,
+    },
+    expiresAt: Date,
+}));
 
 // Routes
 // Fetch rooms
@@ -72,7 +81,7 @@ app.post('/api/classes', async (req, res) => {
 })
 
 // Add Schedule to class
-app.post('/api/classes/:id/schedule', async (req, res) => {
+app.post('/api/class/:id/schedule', async (req, res) => {
     const classId = req.params.id;
     const schedule = req.body; // Expect the schedule data from the request body
     console.log(req.body);
@@ -95,6 +104,24 @@ app.post('/api/classes/:id/schedule', async (req, res) => {
         res.status(500).json({ message: 'Error updating schedule', error: error.message });
     }
 });
+
+// Fetch class schedule by classId
+app.get('/api/class/:id/schedule', async (req, res) => {
+    const classId = req.params.id;
+    console.log(classId);
+    try {
+        const classData = await Classes.findById(classId);
+        if (classData) {
+            res.json(classData.schedule);
+        } else {
+            res.status(404).json({ message: 'Class not found' });
+        }
+    } catch (error) {
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
+
 
 // Delete a class
 app.delete('/api/classes/:id', async (req, res) => {
@@ -128,6 +155,26 @@ app.post('/api/rooms/bulk', async (req, res) => {
         res.status(500).send('Error uploading rooms: ' + error.message);
     }
 });
+
+// To create a new room
+app.post('/api/rooms', async (req, res) => {
+    await Room.create(req.body)
+    console.log(req.body);
+    res.send('Room created');
+})
+
+// To create a new faculty(teacher)
+app.post('/api/teachers', async (req, res) => {
+    await Faculty.create(req.body)
+    console.log(req.body);
+    res.send('Faculty created');
+})
+
+app.post('/api/rooms', async (req, res) => {
+    await Room.create(req.body)
+    console.log(req.body);
+    res.send('Room created');
+})
 
 // Bulk upload faculty (teachers)
 app.post('/api/teachers/bulk', async (req, res) => {
@@ -225,6 +272,27 @@ app.post('/api/users/accounts/create-bulk-users', async (req, res) => {
     res.status(201).send('All users created successfully!');
 });
 
+// Bulk Students additions to the class
+app.post('/api/bulk-add-students', async (req, res) => {
+    try {
+        const students = req.body; // expecting array of students in request body
+        console.log(students)
+        // Filter out entries that do not have an enrollment number
+        const validStudents = students.filter(student => student.enrollmentNumber);
+
+        if (validStudents.length === 0) {
+            return res.status(400).json({ message: 'No valid students to insert' });
+        }
+
+        // Bulk insert valid students into the database
+        await Students.insertMany(validStudents);
+
+        res.status(201).json({ message: 'Students added successfully' });
+    } catch (error) {
+        res.status(500).json({ message: 'Error adding students', error });
+    }
+});
+
 
 // Fetch teachers
 // Fetch teachers with details from Teachers collection
@@ -232,7 +300,7 @@ app.get('/api/users/teachers', async (req, res) => {
     try {
         // Get the list of teachers from the Users collection (based on role)
         const users = await Users.find({ role: 'teacher' }, 'username');
-        
+
         // Fetch additional details from the Teachers collection using username
         const teachersDetails = await Promise.all(users.map(async (user) => {
             const teacherInfo = await Faculty.findOne({ username: user.username });
@@ -255,7 +323,7 @@ app.get('/api/users/students', async (req, res) => {
     try {
         // Get the list of students from the Users collection
         const users = await Users.find({ role: 'student' }, 'username');
-        
+
         // Fetch additional details from the Students collection using username
         const studentsDetails = await Promise.all(users.map(async (user) => {
             const studentInfo = await Students.findOne({ enrollmentNumber: user.username });
@@ -268,6 +336,24 @@ app.get('/api/users/students', async (req, res) => {
         res.status(200).json(studentsDetails);
     } catch (err) {
         res.status(500).send('Error fetching students: ' + err.message);
+    }
+});
+
+// Fetch students based on classId
+app.get('/api/students/class/:classId', async (req, res) => {
+    try {
+        const { classId } = req.params;
+
+        // Query the students collection where classId matches
+        const students = await Students.find({ classId: classId });
+
+        if (students.length === 0) {
+            return res.status(404).json({ message: 'No students found for this class' });
+        }
+
+        res.json(students);
+    } catch (err) {
+        res.status(500).json({ message: 'Server error', error: err.message });
     }
 });
 
@@ -305,6 +391,44 @@ app.post('/login', async (req, res) => {
         res.status(200).json({ role: 'student', ...studentData._doc });
     } else {
         res.status(400).send('Invalid role');
+    }
+});
+
+
+// Get all active announcements
+app.get('/api/announcements', async (req, res) => {
+    try {
+        const currentDate = new Date();
+        const announcements = await Announcements.find({
+            expiresAt: { $gt: currentDate }, // Only get non-expired announcements
+        });
+
+        res.json(announcements);
+    } catch (err) {
+        res.status(500).json({ message: 'Error fetching announcements' });
+    }
+});
+
+// Post a new announcement
+app.post('/api/announcements', async (req, res) => {
+    const { text, postedBy, expiresAt } = req.body;
+
+    // Validate input
+    if (!text || !postedBy || !expiresAt) {
+        return res.status(400).json({ message: 'Text, postedBy, and expiresAt are required' });
+    }
+
+    const newAnnouncement = new Announcements({
+        text,
+        postedBy,
+        expiresAt: new Date(expiresAt), // Ensure it's stored as a Date
+    });
+
+    try {
+        const savedAnnouncement = await newAnnouncement.save();
+        res.status(201).json(savedAnnouncement);
+    } catch (err) {
+        res.status(500).json({ message: 'Error creating announcement' });
     }
 });
 
