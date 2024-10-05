@@ -17,7 +17,7 @@ mongoose.connect('mongodb://localhost:27017/minor-projectv1', {
 
 // Define schemas for Rooms, Faculty, and Subjects
 const Room = mongoose.model('room', new mongoose.Schema({ roomName: String }));
-const Faculty = mongoose.model('teachers', new mongoose.Schema({ facultyName: String, facultyAbbreviation: String }));
+const Faculty = mongoose.model('teachers', new mongoose.Schema({ facultyName: String, facultyAbbreviation: String, username: String }));
 const Subject = mongoose.model('subject', new mongoose.Schema({ subjectCode: String, subjectName: String, subjectAbbreviation: String }));
 const Classes = mongoose.model('classes', new mongoose.Schema({ className: String, section: String, schedule: Object }));
 const Users = mongoose.model('users', new mongoose.Schema({ username: String, hashedPassword: String, role: String }));
@@ -112,7 +112,8 @@ app.get('/api/class/:id/schedule', async (req, res) => {
     try {
         const classData = await Classes.findById(classId);
         if (classData) {
-            res.json(classData.schedule);
+            res.json(classData.schedule.processedSchedule);
+            console.log(classData.schedule)
         } else {
             res.status(404).json({ message: 'Class not found' });
         }
@@ -169,12 +170,72 @@ app.post('/api/teachers', async (req, res) => {
     console.log(req.body);
     res.send('Faculty created');
 })
-
-app.post('/api/rooms', async (req, res) => {
-    await Room.create(req.body)
+// To create a new subject
+app.post('/api/subjects', async (req, res) => {
+    await Subject.create(req.body)
     console.log(req.body);
-    res.send('Room created');
+    res.send('Subject created');
 })
+
+// To delete a room by ID
+app.delete('/api/rooms/:id', async (req, res) => {
+    try {
+        const roomId = req.params.id;
+        const result = await Room.findByIdAndDelete(roomId);
+        
+        if (!result) {
+            return res.status(404).send('Room not found');
+        }
+
+        res.send(`Room with ID ${roomId} deleted successfully`);
+    } catch (error) {
+        console.error(error);
+        res.status(500).send('An error occurred while deleting the room');
+    }
+});
+
+// To delete a teacher (faculty) by ID and their user account
+app.delete('/api/teachers/:id', async (req, res) => {
+    try {
+        const teacherId = req.params.id;
+        // Find the teacher first to get their username
+        const teacher = await Faculty.findById(teacherId);
+        
+        if (!teacher) {
+            return res.status(404).send('Teacher not found');
+        }
+
+        const username = teacher.username;
+        // Delete the teacher from the Faculty collection
+        await Faculty.findByIdAndDelete(teacherId);
+        // Delete the user account with the matching username from the Users collection
+        await Users.findOneAndDelete({ username });
+
+        res.send(`Teacher with ID ${teacherId} and associated user account deleted successfully`);
+    } catch (error) {
+        console.error(error);
+        res.status(500).send('An error occurred while deleting the teacher and user account');
+    }
+});
+
+
+// To delete a subject by ID
+app.delete('/api/subjects/:id', async (req, res) => {
+    try {
+        const subjectId = req.params.id;
+        const result = await Subject.findByIdAndDelete(subjectId);
+        
+        if (!result) {
+            return res.status(404).send('Subject not found');
+        }
+
+        res.send(`Subject with ID ${subjectId} deleted successfully`);
+    } catch (error) {
+        console.error(error);
+        res.status(500).send('An error occurred while deleting the subject');
+    }
+});
+
 
 // Bulk upload faculty (teachers)
 app.post('/api/teachers/bulk', async (req, res) => {
@@ -339,6 +400,45 @@ app.get('/api/users/students', async (req, res) => {
     }
 });
 
+// Delete User accounts
+// To delete a student account by ID (without deleting details)
+app.delete('/api/users/students/:id', async (req, res) => {
+    try {
+        const userId = req.params.id;
+        
+        // Find and delete the student from the Users collection
+        const user = await Users.findByIdAndDelete(userId);
+        
+        if (!user || user.role !== 'student') {
+            return res.status(404).send('Student not found or invalid role');
+        }
+
+        res.send(`Student account with ID ${userId} deleted successfully`);
+    } catch (error) {
+        console.error(error);
+        res.status(500).send('An error occurred while deleting the student');
+    }
+});
+// To delete a teacher account by ID (without deleting details)
+app.delete('/api/users/teachers/:id', async (req, res) => {
+    try {
+        const userId = req.params.id;
+        
+        // Find and delete the teacher from the Users collection
+        const user = await Users.findByIdAndDelete(userId);
+        
+        if (!user || user.role !== 'teacher') {
+            return res.status(404).send('Teacher not found or invalid role');
+        }
+
+        res.send(`Teacher account with ID ${userId} deleted successfully`);
+    } catch (error) {
+        console.error(error);
+        res.status(500).send('An error occurred while deleting the teacher');
+    }
+});
+
+
 // Fetch students based on classId
 app.get('/api/students/class/:classId', async (req, res) => {
     try {
@@ -389,6 +489,8 @@ app.post('/login', async (req, res) => {
             return res.status(404).send('Student data not found');
         }
         res.status(200).json({ role: 'student', ...studentData._doc });
+    }else if (user.role === 'admin') {
+        res.status(200).json({ role: 'admin'  });
     } else {
         res.status(400).send('Invalid role');
     }
