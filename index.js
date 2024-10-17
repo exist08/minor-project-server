@@ -17,9 +17,32 @@ mongoose.connect('mongodb://localhost:27017/minor-projectv1', {
 
 // Define schemas for Rooms, Faculty, and Subjects
 const Room = mongoose.model('room', new mongoose.Schema({ roomName: String }));
-const Faculty = mongoose.model('teachers', new mongoose.Schema({ facultyName: String, facultyAbbreviation: String, username: String }));
-const Subject = mongoose.model('subject', new mongoose.Schema({ subjectCode: String, subjectName: String, subjectAbbreviation: String }));
-const Classes = mongoose.model('classes', new mongoose.Schema({ className: String, section: String, schedule: Object }));
+const Faculty = mongoose.model('teachers', new mongoose.Schema({
+    facultyName: String, facultyAbbreviation: String, username: String, subjects: [
+        {
+            subjectId: { type: mongoose.Schema.Types.ObjectId, ref: 'Subject' },
+            subjectName: { type: String },
+            uploadPermission: { type: Boolean, default: false }
+        }
+    ]
+}));
+const Subject = mongoose.model('subjects', new mongoose.Schema({ subjectCode: String, subjectName: String, subjectAbbreviation: String }));
+const Classes = mongoose.model('classes', new mongoose.Schema({
+    className: { type: String, required: true },
+    section: { type: String },
+    teachers: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Teacher' }], // Array of teacher IDs
+    subjects: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Subject' }], // Array of subject IDs
+    schedule: {
+        type: Object, // or Array, depending on your structure
+        default: {}
+    }
+}));
+const Permission = mongoose.model('Permission', new mongoose.Schema({
+    teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Teacher' },
+    classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class' },
+    subjectId: { type: mongoose.Schema.Types.ObjectId, ref: 'Subject' },
+    havePermission: { type: Boolean, default: false },
+}));
 const Users = mongoose.model('users', new mongoose.Schema({ username: String, hashedPassword: String, role: String }));
 const Students = mongoose.model('students', new mongoose.Schema({ enrollmentNumber: String, name: String, age: String, classId: String }));
 const Announcements = mongoose.model('announcements', new mongoose.Schema({
@@ -30,6 +53,33 @@ const Announcements = mongoose.model('announcements', new mongoose.Schema({
         default: Date.now,
     },
     expiresAt: Date,
+}));
+const Marks = mongoose.model('marks', new mongoose.Schema({
+    studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
+    classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Classes', required: true },
+    grades: {
+        MST_I: [
+            {
+                subject: { type: mongoose.Schema.Types.ObjectId, ref: 'Subject', required: true },
+                marks: { type: Number, required: true },
+                maxMarks: { type: Number, required: true },
+            },
+        ],
+        MST_II: [
+            {
+                subject: { type: mongoose.Schema.Types.ObjectId, ref: 'Subject', required: true },
+                marks: { type: Number, required: true },
+                maxMarks: { type: Number, required: true },
+            },
+        ],
+        FINAL: [
+            {
+                subject: { type: mongoose.Schema.Types.ObjectId, ref: 'Subject', required: true },
+                marks: { type: Number, required: true },
+                maxMarks: { type: Number, required: true },
+            },
+        ],
+    },
 }));
 
 // Routes
@@ -112,8 +162,8 @@ app.get('/api/class/:id/schedule', async (req, res) => {
     try {
         const classData = await Classes.findById(classId);
         if (classData) {
-            res.json(classData.schedule.processedSchedule);
-            console.log(classData.schedule)
+            res.json(classData?.schedule?.processedSchedule);
+            console.log(classData?.schedule)
         } else {
             res.status(404).json({ message: 'Class not found' });
         }
@@ -121,6 +171,42 @@ app.get('/api/class/:id/schedule', async (req, res) => {
         res.status(500).json({ message: 'Server error' });
     }
 });
+
+// Fetch class subjects by classId
+
+app.get('/api/class/:id/subjects', async (req, res) => {
+    const classId = req.params.id;
+    try {
+        const classData = await Classes.findById(classId);
+        if (classData) {
+            res.json(classData.subjects);
+        } else {
+            res.status(404).json({ message: 'Class not found' });
+        }
+    } catch (error) {
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
+// get permissions for a class and teacher
+app.get('/permissions', async (req, res) => {
+    try {
+        const { classId, teacherId } = req.query;
+        
+        if (!classId || !teacherId) {
+            return res.status(400).json({ message: 'Missing classId or teacherId' });
+        }
+
+        const permissions = await Permission.find({ classId, teacherId, havePermission: true })
+                                            .populate('subjectId');
+
+        return res.json(permissions);
+    } catch (error) {
+        console.error('Error fetching permissions:', error);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
 
 
 
@@ -182,7 +268,7 @@ app.delete('/api/rooms/:id', async (req, res) => {
     try {
         const roomId = req.params.id;
         const result = await Room.findByIdAndDelete(roomId);
-        
+
         if (!result) {
             return res.status(404).send('Room not found');
         }
@@ -200,7 +286,7 @@ app.delete('/api/teachers/:id', async (req, res) => {
         const teacherId = req.params.id;
         // Find the teacher first to get their username
         const teacher = await Faculty.findById(teacherId);
-        
+
         if (!teacher) {
             return res.status(404).send('Teacher not found');
         }
@@ -224,7 +310,7 @@ app.delete('/api/subjects/:id', async (req, res) => {
     try {
         const subjectId = req.params.id;
         const result = await Subject.findByIdAndDelete(subjectId);
-        
+
         if (!result) {
             return res.status(404).send('Subject not found');
         }
@@ -405,10 +491,10 @@ app.get('/api/users/students', async (req, res) => {
 app.delete('/api/users/students/:id', async (req, res) => {
     try {
         const userId = req.params.id;
-        
+
         // Find and delete the student from the Users collection
         const user = await Users.findByIdAndDelete(userId);
-        
+
         if (!user || user.role !== 'student') {
             return res.status(404).send('Student not found or invalid role');
         }
@@ -423,10 +509,10 @@ app.delete('/api/users/students/:id', async (req, res) => {
 app.delete('/api/users/teachers/:id', async (req, res) => {
     try {
         const userId = req.params.id;
-        
+
         // Find and delete the teacher from the Users collection
         const user = await Users.findByIdAndDelete(userId);
-        
+
         if (!user || user.role !== 'teacher') {
             return res.status(404).send('Teacher not found or invalid role');
         }
@@ -489,8 +575,8 @@ app.post('/login', async (req, res) => {
             return res.status(404).send('Student data not found');
         }
         res.status(200).json({ role: 'student', ...studentData._doc });
-    }else if (user.role === 'admin') {
-        res.status(200).json({ role: 'admin'  });
+    } else if (user.role === 'admin') {
+        res.status(200).json({ role: 'admin' });
     } else {
         res.status(400).send('Invalid role');
     }
@@ -534,6 +620,197 @@ app.post('/api/announcements', async (req, res) => {
     }
 });
 
+
+// To Upload Marks as a Teacher
+app.post('/api/upload-marks', async (req, res) => {
+    try {
+        const marksData = req.body;
+
+        // Example marksData format: [{ enrollmentNumber, name, marks, maxMarks, subjectId, classId }]
+
+        const bulkOperations = marksData.map((entry) => ({
+            updateOne: {
+                filter: { 'student.enrollmentNumber': entry.enrollmentNumber, Subject: entry.subjectId },
+                update: {
+                    $set: {
+                        student: { name: entry.name, enrollmentNumber: entry.enrollmentNumber },
+                        marks: entry.marks,
+                        maxMarks: entry.maxMarks,
+                        classId: entry.classId,
+                        subject: entry.subjectId
+                    }
+                },
+                upsert: true // Create if doesn't exist
+            }
+        }));
+
+        // Perform bulk write to MongoDB
+        await Marks.bulkWrite(bulkOperations);
+
+        res.status(200).send('Marks uploaded successfully');
+    } catch (err) {
+        console.error(err);
+        res.status(500).send('Error uploading marks');
+    }
+});
+
+// PUT: Assign Subjects to Class
+app.put('/api/classes/:classId/assign-subjects', async (req, res) => {
+    const { classId } = req.params;
+    const { subjects } = req.body; // An array of subject IDs
+
+    if (!subjects || !Array.isArray(subjects)) {
+        return res.status(400).json({ message: 'Invalid input. Subjects should be an array of IDs.' });
+    }
+
+    try {
+        // Find the class and update the subjects array
+        const updatedClass = await Classes.findByIdAndUpdate(
+            classId,
+            { subjects: subjects },
+            { new: true } // Return the updated document
+        );
+
+        if (!updatedClass) {
+            return res.status(404).json({ message: 'Class not found' });
+        }
+
+        res.json({ message: 'Subjects assigned successfully', updatedClass });
+    } catch (error) {
+        console.error('Error assigning subjects:', error);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
+// PUT: Assign Teachers to Class
+// app.put('/api/classes/:classId/assign-teachers', async (req, res) => {
+//     const { classId } = req.params;
+//     const { teachers } = req.body; // An array of teacher IDs
+
+//     if (!teachers || !Array.isArray(teachers)) {
+//         return res.status(400).json({ message: 'Invalid input. Teachers should be an array of IDs.' });
+//     }
+
+//     try {
+//         // Find the class and update the teachers array
+//         const updatedClass = await Classes.findByIdAndUpdate(
+//             classId,
+//             { teachers: teachers },
+//             { new: true } // Return the updated document
+//         );
+
+//         if (!updatedClass) {
+//             return res.status(404).json({ message: 'Class not found' });
+//         }
+
+//         res.json({ message: 'Teachers assigned successfully', updatedClass });
+//     } catch (error) {
+//         console.error('Error assigning teachers:', error);
+//         res.status(500).json({ message: 'Server error' });
+//     }
+// });
+
+// Backend - assign-teachers route
+app.put('/api/classes/:classId/assign-teachers', async (req, res) => {
+    try {
+        const { classId } = req.params;
+        const { teacherIds } = req.body; // Array of teacher IDs
+
+        // 1. Fetch class by ID, only fetching the subject IDs from the subjects array
+        const classData = await Classes.findById(classId).populate('subjects');
+
+        if (!classData) {
+            return res.status(404).json({ message: 'Class not found' });
+        }
+
+        // 2. Fetch full details of subjects using the subject IDs from the class data
+        const subjectIds = classData?.subjects; // Array of ObjectId references
+        const subjects = await Subject.find({ '_id': { $in: subjectIds } }); // Get all subject details
+
+        // 3. Loop through the teacher IDs and add subjects to their records
+        for (const teacherId of teacherIds) {
+            const teacher = await Faculty.findById(teacherId);
+
+            if (!teacher) {
+                return res.status(404).json({ message: `Teacher with id ${teacherId} not found` });
+            }
+
+            // Prepare the subjects with detailed info
+            const subjectsWithDetails = subjects.map(subject => ({
+                subjectId: subject._id,
+                subjectName: subject.name, // Assuming 'name' is the subject name
+                uploadPermission: false,  // Default permission is false
+            }));
+
+            // 4. Add these subjects to the teacher's subjects array
+            await Faculty.updateOne(
+                { _id: teacherId },
+                { $addToSet: { subjects: { $each: subjectsWithDetails } } }
+            );
+        }
+
+        res.status(200).json({ message: 'Teachers successfully assigned to the class' });
+    } catch (error) {
+        console.error('Error assigning teachers:', error);
+        res.status
+    }
+});
+
+
+app.get('/api/classes/:classId/teachers', async (req, res) => {
+    const { classId } = req.params;
+    try {
+        // Find the class and retrieve the teachers array
+        const classData = await Classes.findById(classId);
+        if (!classData) {
+            return res.status(404).json({ message: 'Class not found' });
+        }
+
+        res.json(classData.teachers);
+    } catch (error) {
+        console.error('Error fetching class data:', error);
+        res.status(500).json({ message: 'Server error' });
+    }
+})
+
+app.get('/api/classes/:classId/subjects', async (req, res) => {
+
+    const { classId } = req.params;
+    try {
+        // Find the class and retrieve the subjects array
+        const classData = await Classes.findById(classId);
+        if (!classData) {
+            return res.status(404).json({ message: 'Class not found' });
+        }
+        res.json(classData.subjects);
+
+    } catch (error) {
+        console.error('Error fetching class data:', error);
+        res.status(500).json({ message: 'Server error' });
+
+    }
+})
+
+// Route for assigning permissions
+app.post('/api/permissions', async (req, res) => {
+    try {
+        const permissions = req.body; // Array of permission objects
+        await Permission.insertMany(permissions);
+        res.status(200).send('Permissions assigned successfully');
+    } catch (error) {
+        res.status(500).send('Error assigning permissions');
+    }
+});
+
+app.get('/api/permissions', async (req, res) => {
+    const { classId } = req.query;
+    try {
+        const permissions = await Permission.find({ classId });
+        res.status(200).json(permissions);
+    } catch (error) {
+        res.status(500).send('Error fetching permissions');
+    }
+});
 
 // Start the server
 const PORT = process.env.PORT || 5000;
