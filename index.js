@@ -2,11 +2,21 @@ const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');  // Import bcrypt
+const multer = require('multer');
+const path = require('path');
 
 // Initialize express
 const app = express();
 app.use(cors());
 app.use(express.json());
+// Make the uploads directory static and publicly accessible
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+// Also ensure the uploads directory exists
+const fs = require('fs');
+if (!fs.existsSync('uploads')) {
+    fs.mkdirSync('uploads');
+}
 
 // Connect to MongoDB
 mongoose.connect('mongodb://localhost:27017/minor-projectv1', {
@@ -80,6 +90,52 @@ const Marks = mongoose.model('marks', new mongoose.Schema({
             },
         ],
     },
+}));
+
+const Materials = mongoose.model('materials', new mongoose.Schema({
+    classId: { type: mongoose.Schema.Types.ObjectId, required: true, ref: 'Class' },
+    teacherId: { type: mongoose.Schema.Types.ObjectId, required: true, ref: 'Teacher' },
+    subjectId: { type: mongoose.Schema.Types.ObjectId, required: true, ref: 'Subject' },
+    filePath: { type: String, required: true }, // Path to the uploaded file
+    fileName: { type: String, required: true }, // Original filename
+    uploadDate: { type: Date, default: Date.now }, // Date of upload
+}));
+
+const Assignments = mongoose.model('assignments', new mongoose.Schema({
+    classId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Class',
+        required: true
+    },
+    teacherId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        required: true
+    },
+    subjectId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Subject',
+        required: true
+    },
+    title: {
+        type: String,
+        required: true
+    },
+    description: String,
+    dueDate: {
+        type: Date,
+        required: true
+    },
+    filePath: {
+        type: String,
+        required: true
+    },
+    fileName: {
+        type: String,
+        required: true
+    },
+}, {
+    timestamps: true
 }));
 
 // Routes
@@ -192,13 +248,13 @@ app.get('/api/class/:id/subjects', async (req, res) => {
 app.get('/permissions', async (req, res) => {
     try {
         const { classId, teacherId } = req.query;
-        
+
         if (!classId || !teacherId) {
             return res.status(400).json({ message: 'Missing classId or teacherId' });
         }
 
         const permissions = await Permission.find({ classId, teacherId, havePermission: true })
-                                            .populate('subjectId');
+            .populate('subjectId');
 
         return res.json(permissions);
     } catch (error) {
@@ -623,36 +679,83 @@ app.post('/api/announcements', async (req, res) => {
 
 // To Upload Marks as a Teacher
 app.post('/api/upload-marks', async (req, res) => {
-    try {
-        const marksData = req.body;
+    const marksArray = req.body; // assuming req.body is an array of marks data
 
-        // Example marksData format: [{ enrollmentNumber, name, marks, maxMarks, subjectId, classId }]
+    const bulkOps = marksArray.map(({ studentId, classId, subjectId, examType, marks, maxMarks }) => {
+        const examField = `grades.${examType}`;
 
-        const bulkOperations = marksData.map((entry) => ({
+        return {
             updateOne: {
-                filter: { 'student.enrollmentNumber': entry.enrollmentNumber, Subject: entry.subjectId },
+                filter: {
+                    studentId: studentId,
+                    classId: classId,
+                    [`${examField}`]: { $elemMatch: { subject: subjectId } } // Check if the subject exists
+                },
                 update: {
                     $set: {
-                        student: { name: entry.name, enrollmentNumber: entry.enrollmentNumber },
-                        marks: entry.marks,
-                        maxMarks: entry.maxMarks,
-                        classId: entry.classId,
-                        subject: entry.subjectId
+                        [`${examField}.$.marks`]: marks,    // Update marks
+                        [`${examField}.$.maxMarks`]: maxMarks // Update maxMarks if needed
                     }
                 },
-                upsert: true // Create if doesn't exist
+                upsert: false // Only update if subject exists
             }
-        }));
+        };
+    });
 
-        // Perform bulk write to MongoDB
-        await Marks.bulkWrite(bulkOperations);
+    // Second bulk operation to handle cases where the subject doesn't exist
+    const newMarksOps = marksArray.map(({ studentId, classId, subjectId, examType, marks, maxMarks }) => {
+        const examField = `grades.${examType}`;
 
-        res.status(200).send('Marks uploaded successfully');
-    } catch (err) {
-        console.error(err);
-        res.status(500).send('Error uploading marks');
+        return {
+            updateOne: {
+                filter: {
+                    studentId: studentId,
+                    classId: classId
+                },
+                update: {
+                    $push: {
+                        [examField]: { subject: subjectId, marks: marks, maxMarks: maxMarks } // Insert new marks
+                    }
+                },
+                upsert: true // If student or class is not found, create a new entry
+            }
+        };
+    });
+
+    // Combine both update and insert operations
+    Marks.bulkWrite([...bulkOps, ...newMarksOps])
+        .then(result => {
+            console.log(result);
+            res.status(200).send('Marks updated successfully');
+        })
+        .catch(err => {
+            console.error('Error updating marks:', err);
+            res.status(500).send('Error uploading marks');
+        });
+
+});
+
+// To Fetch Marks as a Student
+app.get('/api/marks/:studentId', async (req, res) => {
+    const studentId = req.params.studentId;
+
+    try {
+        // Use 'new' when creating a new ObjectId instance
+        const marks = await Marks.findOne({ studentId: new mongoose.Types.ObjectId(studentId) });
+
+        if (!marks) {
+            return res.status(404).json({ message: 'Marks not found for this student.' });
+        }
+
+        // Return marks
+        return res.status(200).json(marks);
+    } catch (error) {
+        console.error('Error fetching marks:', error);
+        return res.status(500).json({ message: 'Server error while fetching marks.' });
     }
 });
+
+
 
 // PUT: Assign Subjects to Class
 app.put('/api/classes/:classId/assign-subjects', async (req, res) => {
@@ -809,6 +912,209 @@ app.get('/api/permissions', async (req, res) => {
         res.status(200).json(permissions);
     } catch (error) {
         res.status(500).send('Error fetching permissions');
+    }
+});
+
+
+
+// File Upload Handler
+// Set up storage for file uploads
+const storage = multer.diskStorage({
+    destination: function (req, file, cb) {
+        cb(null, 'uploads/'); // Directory to store files
+    },
+    filename: function (req, file, cb) {
+        cb(null, `${Date.now()}-${file.originalname}`); // Filename to avoid conflicts
+    },
+});
+
+// File filter to accept only PDF or DOCX files
+const fileFilter = (req, file, cb) => {
+    if (file.mimetype === 'application/pdf' || file.mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+        cb(null, true);
+    } else {
+        cb(new Error('Unsupported file type'), false);
+    }
+};
+
+const upload = multer({
+    storage: storage,
+    limits: {
+        fileSize: 1024 * 1024 * 5, // Limit file size to 5MB
+    },
+    fileFilter: fileFilter,
+});
+
+app.post('/api/materials/upload', upload.single('file'), async (req, res) => {
+    const { classId, teacherId, subjectId } = req.body;
+
+    if (!classId || !teacherId || !subjectId || !req.file) {
+        return res.status(400).send('Missing required fields');
+    }
+
+    try {
+        const newMaterial = new Materials({
+            classId: new mongoose.Types.ObjectId(classId),
+            teacherId: new mongoose.Types.ObjectId(teacherId),
+            subjectId: new mongoose.Types.ObjectId(subjectId),
+            filePath: req.file.path,
+            fileName: req.file.originalname,
+        });
+
+        await newMaterial.save();
+        res.status(200).json({ message: 'File uploaded successfully', material: newMaterial });
+    } catch (error) {
+        res.status(500).json({
+            message: 'Error uploading file',
+            error: error.message  // Add this line to send the actual error
+        });
+    }
+});
+
+// In your materials routes file
+app.get('/api/materials', async (req, res) => {
+    const { classId, teacherId, subjectId } = req.query;
+
+    try {
+        const materials = await Materials.find({
+            classId: new mongoose.Types.ObjectId(classId),
+            teacherId: new mongoose.Types.ObjectId(teacherId),
+            subjectId: new mongoose.Types.ObjectId(subjectId)
+        });
+        res.json(materials);
+    } catch (error) {
+        console.error('Error fetching materials:', error);
+        res.status(500).json({ message: 'Error fetching materials', error: error.message });
+    }
+});
+
+// Endpoint to get materials by classId
+app.get('/api/materials/class/:classId', async (req, res) => {
+    const { classId } = req.params;
+
+    try {
+        // Fetch materials with the provided classId
+        const materials = await Materials.find({
+            classId: new mongoose.Types.ObjectId(classId)
+        });
+
+        // Return the materials if found
+        res.json(materials);
+    } catch (error) {
+        console.error('Error fetching materials:', error);
+        res.status(500).json({ message: 'Error fetching materials', error: error.message });
+    }
+});
+
+// Add delete route
+app.delete('/api/materials/:id', async (req, res) => {
+    try {
+        const material = await Materials.findById(req.params.id);
+        if (!material) {
+            return res.status(404).json({ message: 'Material not found' });
+        }
+
+        // Delete the file from storage
+        const filePath = path.join(__dirname, '..', material.filePath);
+        try {
+            await fs.unlink(filePath);
+        } catch (unlinkError) {
+            console.error('Error deleting file:', unlinkError);
+        }
+
+        // Delete the database record
+        await Materials.findByIdAndDelete(req.params.id);
+        res.json({ message: 'Material deleted successfully' });
+    } catch (error) {
+        console.error('Error deleting material:', error);
+        res.status(500).json({ message: 'Error deleting material', error: error.message });
+    }
+});
+
+
+// assignments
+// Create new assignment
+app.post('/api/assignments/upload', upload.single('file'), async (req, res) => {
+    const { classId, teacherId, subjectId, title, description, dueDate } = req.body;
+
+    if (!classId || !teacherId || !subjectId || !req.file || !title || !dueDate) {
+        return res.status(400).json({ message: 'Missing required fields' });
+    }
+
+    try {
+        const newAssignment = new Assignments({
+            classId: new mongoose.Types.ObjectId(classId),
+            teacherId: new mongoose.Types.ObjectId(teacherId),
+            subjectId: new mongoose.Types.ObjectId(subjectId),
+            title,
+            description,
+            dueDate,
+            filePath: req.file.path,
+            fileName: req.file.originalname,
+        });
+
+        await newAssignment.save();
+        res.status(200).json({ message: 'Assignment created successfully', assignment: newAssignment });
+    } catch (error) {
+        console.error('Error creating assignment:', error);
+        res.status(500).json({ message: 'Error creating assignment', error: error.message });
+    }
+});
+
+// Get assignments for a class/subject/teacher
+app.get('/api/assignments', async (req, res) => {
+    const { classId, teacherId, subjectId } = req.query;
+
+    try {
+        const assignments = await Assignments.find({
+            classId: new mongoose.Types.ObjectId(classId),
+            teacherId: new mongoose.Types.ObjectId(teacherId),
+            subjectId: new mongoose.Types.ObjectId(subjectId)
+        });
+        res.json(assignments);
+    } catch (error) {
+        console.error('Error fetching assignments:', error);
+        res.status(500).json({ message: 'Error fetching assignments', error: error.message });
+    }
+});
+
+// Get assignments for a class
+app.get('/api/assignments/class/:classId', async (req, res) => {
+    const { classId } = req.params;
+
+    try {
+        const assignments = await Assignments.find({
+            classId: new mongoose.Types.ObjectId(classId)
+        });
+        res.json(assignments);
+    } catch (error) {
+        console.error('Error fetching assignments:', error);
+        res.status(500).json({ message: 'Error fetching assignments', error: error.message });
+    }
+});
+
+// Delete assignment
+app.delete('/api/assignments/:id', async (req, res) => {
+    try {
+        const assignment = await Assignments.findById(req.params.id);
+        if (!assignment) {
+            return res.status(404).json({ message: 'Assignment not found' });
+        }
+
+        // Delete the file from storage
+        const filePath = path.join(__dirname, '..', assignment.filePath);
+        try {
+            await fs.unlink(filePath);
+        } catch (unlinkError) {
+            console.error('Error deleting file:', unlinkError);
+        }
+
+        // Delete the database record
+        await Assignments.findByIdAndDelete(req.params.id);
+        res.json({ message: 'Assignment deleted successfully' });
+    } catch (error) {
+        console.error('Error deleting assignment:', error);
+        res.status(500).json({ message: 'Error deleting assignment', error: error.message });
     }
 });
 
